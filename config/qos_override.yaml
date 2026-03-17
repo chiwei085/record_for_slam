@@ -1,0 +1,78 @@
+# QoS overrides for ros2 bag record
+# RealSense topics publish with best_effort reliability by default,
+# but ros2 bag record subscribes with reliable by default → use this file
+# to match the publisher's QoS and avoid dropped messages.
+#
+# Usage: ros2 bag record --qos-profile-overrides-path qos_override.yaml ...
+
+/camera/color/image_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+
+/camera/color/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+
+/camera/depth/image_rect_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+
+/camera/depth/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+
+/camera/aligned_depth_to_color/image_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+
+/camera/aligned_depth_to_color/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+
+/camera/imu:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+
+/camera/gyro/sample:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+
+/camera/accel/sample:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+
+/camera/depth/color/points:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+
+/tf:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 100
+
+/tf_static:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 100
