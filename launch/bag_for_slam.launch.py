@@ -9,6 +9,7 @@ Usage:
   ros2 launch record_for_slam bag_for_slam.launch.py bag_prefix:=outdoor_run
   ros2 launch record_for_slam bag_for_slam.launch.py enable_rviz:=false
   ros2 launch record_for_slam bag_for_slam.launch.py enable_pointcloud:=true
+  ros2 launch record_for_slam bag_for_slam.launch.py fps:=15
   # bags saved to: src/record_for_slam/bags/<prefix>_YYYYMMDD_HHMMSS/
 
 Recorded topics (RTABMap core):
@@ -48,9 +49,9 @@ from launch_ros.substitutions import FindPackageShare
 # Resolved at import time.
 # os.path.realpath (via Path.resolve) follows symlinks created by
 # `colcon build --symlink-install`, so this always points to the source tree.
-_PKG_DIR  = Path(__file__).resolve().parent.parent   # src/record_for_slam/
-_BAGS_DIR = _PKG_DIR / 'bags'
-_RVIZ_CFG = _PKG_DIR / 'config' / 'slam_preview.rviz'
+_PKG_DIR = Path(__file__).resolve().parent.parent  # src/record_for_slam/
+_BAGS_DIR = _PKG_DIR / "bags"
+_RVIZ_CFG = _PKG_DIR / "config" / "slam_preview.rviz"
 
 
 # ---------------------------------------------------------------------------
@@ -58,23 +59,25 @@ _RVIZ_CFG = _PKG_DIR / 'config' / 'slam_preview.rviz'
 # ---------------------------------------------------------------------------
 
 CORE_TOPICS = [
-    '/camera/color/image_raw',
-    '/camera/color/camera_info',
-    '/camera/depth/image_rect_raw',
-    '/camera/depth/camera_info',
-    '/camera/aligned_depth_to_color/image_raw',
-    '/camera/aligned_depth_to_color/camera_info',
-    '/camera/imu',
-    '/tf',
-    '/tf_static',
+    "/camera/color/image_raw",
+    "/camera/color/camera_info",
+    "/camera/depth/image_rect_raw",
+    "/camera/depth/camera_info",
+    "/camera/aligned_depth_to_color/image_raw",
+    "/camera/aligned_depth_to_color/camera_info",
+    "/camera/imu",
+    "/imu/filtered",  # orientation-fused IMU from imu_filter_madgwick
+    "/tf",
+    "/tf_static",
 ]
 
-POINTCLOUD_TOPIC = '/camera/depth/color/points'
+POINTCLOUD_TOPIC = "/camera/depth/color/points"
 
 
 # ---------------------------------------------------------------------------
 # generate_launch_description
 # ---------------------------------------------------------------------------
+
 
 def generate_launch_description():
 
@@ -83,84 +86,86 @@ def generate_launch_description():
     # ------------------------------------------------------------------
 
     bag_prefix_arg = DeclareLaunchArgument(
-        'bag_prefix',
-        default_value='slam',
-        description='Prefix for the output bag directory (saved to <pkg>/bags/)',
+        "bag_prefix",
+        default_value="slam",
+        description="Prefix for the output bag directory (saved to <pkg>/bags/)",
     )
 
     camera_delay_arg = DeclareLaunchArgument(
-        'camera_delay',
-        default_value='4.0',
-        description='Seconds to wait after camera node starts before recording begins',
+        "camera_delay",
+        default_value="8.0",
+        description="Seconds to wait after camera node starts before recording begins",
     )
 
     enable_pointcloud_arg = DeclareLaunchArgument(
-        'enable_pointcloud',
-        default_value='false',
-        description='Also record /camera/depth/color/points (increases bag size)',
+        "enable_pointcloud",
+        default_value="false",
+        description="Also record /camera/depth/color/points (increases bag size)",
+    )
+
+    fps_arg = DeclareLaunchArgument(
+        "fps",
+        default_value="30",
+        description="Camera framerate: 30 or 15 (use 15 if USB bandwidth causes frame drops)",
     )
 
     enable_rviz_arg = DeclareLaunchArgument(
-        'enable_rviz',
-        default_value='true',
-        description='Open RViz2 for live dataflow preview',
+        "enable_rviz",
+        default_value="true",
+        description="Open RViz2 for live dataflow preview",
     )
 
     storage_arg = DeclareLaunchArgument(
-        'storage',
-        default_value='mcap',
-        description='rosbag2 storage plugin: mcap (recommended) or sqlite3',
+        "storage",
+        default_value="mcap",
+        description="rosbag2 storage plugin: mcap (recommended) or sqlite3",
     )
 
     # ------------------------------------------------------------------
     # RealSense camera node (via rs_launch.py)
     # ------------------------------------------------------------------
 
-    rs_launch_path = PathJoinSubstitution([
-        FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py'
-    ])
+    rs_launch_path = PathJoinSubstitution(
+        [FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"]
+    )
 
     realsense_node = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(rs_launch_path),
         launch_arguments={
             # -- Stream enables --
-            'enable_color': 'true',
-            'enable_depth': 'true',
-            'enable_gyro':  'true',
-            'enable_accel': 'true',
-
+            "enable_color": "true",
+            "enable_depth": "true",
+            "enable_gyro": "true",
+            "enable_accel": "true",
             # -- IMU: merge gyro+accel → /camera/imu --
             # 0=None, 1=copy, 2=linear_interpolation (recommended)
-            'unite_imu_method': '2',
-
+            "unite_imu_method": "2",
             # -- Sync color & depth frames (important for RTABMap) --
-            'enable_sync': 'true',
-
-            # -- Color: 640x480 @ 30 fps --
-            'rgb_camera.color_profile': '640x480x30',
-            'rgb_camera.color_format':  'RGB8',
-
-            # -- Depth: 640x480 @ 30 fps --
-            'depth_module.depth_profile': '640x480x30',
-            'depth_module.depth_format':  'Z16',
-
+            "enable_sync": "true",
+            # -- Color: 640x480 @ fps (30 or 15 via fps:= arg) --
+            "rgb_camera.color_profile": PythonExpression(
+                ["'640x480x' + '", LaunchConfiguration("fps"), "'"]
+            ),
+            "rgb_camera.color_format": "RGB8",
+            # -- Depth: 640x480 @ fps --
+            "depth_module.depth_profile": PythonExpression(
+                ["'640x480x' + '", LaunchConfiguration("fps"), "'"]
+            ),
+            "depth_module.depth_format": "Z16",
             # -- Align depth to color frame (RTABMap-friendly) --
-            'align_depth.enable': 'true',
-
+            "align_depth.enable": "true",
             # -- Point cloud (controlled by launch arg) --
-            'pointcloud.enable': LaunchConfiguration('enable_pointcloud'),
-
+            "pointcloud.enable": LaunchConfiguration("enable_pointcloud"),
             # -- TF --
-            'publish_tf':      'true',
-            'tf_publish_rate': '15.0',  # dynamic TF at 15 Hz
-
+            "publish_tf": "true",
+            "tf_publish_rate": "15.0",  # dynamic TF at 15 Hz
             # -- Namespace --
             # namespace='' + name='camera' → node FQN /camera
             # → topics at /camera/color/image_raw  (single-level prefix)
             # namespace='camera' + name='camera' → FQN /camera/camera
             # → topics at /camera/camera/color/... (double-prefix, wrong)
-            'camera_namespace': '',
-            'camera_name':      'camera',
+            "camera_namespace": "",
+            "camera_name": "camera",
         }.items(),
     )
 
@@ -169,66 +174,111 @@ def generate_launch_description():
     # ------------------------------------------------------------------
 
     rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-d', str(_RVIZ_CFG)],
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('enable_rviz')),
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        arguments=["-d", str(_RVIZ_CFG)],
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("enable_rviz")),
+    )
+
+    # ------------------------------------------------------------------
+    # IMU orientation filter (Madgwick: gyro+accel → /imu/filtered)
+    # D455 raw IMU has no orientation; this adds it for RTABMap gravity-aid.
+    # Yaw will drift (no magnetometer) but roll/pitch are accurate.
+    # ------------------------------------------------------------------
+
+    imu_filter_node = Node(
+        package="imu_filter_madgwick",
+        executable="imu_filter_madgwick_node",
+        name="imu_filter_madgwick",
+        output="screen",
+        parameters=[
+            {
+                "use_mag": False,
+                "publish_tf": False,
+                "world_frame": "enu",
+                "gain": 0.1,
+                "zeta": 0.0,
+            }
+        ],
+        remappings=[
+            ("imu/data_raw", "/camera/imu"),
+            ("imu/data", "/imu/filtered"),
+        ],
     )
 
     # ------------------------------------------------------------------
     # ros2 bag record (delayed to let the camera node come up)
     # ------------------------------------------------------------------
 
-    qos_yaml = PathJoinSubstitution([
-        FindPackageShare('record_for_slam'), 'config', 'qos_override.yaml'
-    ])
+    qos_yaml = PathJoinSubstitution(
+        [FindPackageShare("record_for_slam"), "config", "qos_override.yaml"]
+    )
 
-    bag_output = PythonExpression([
-        f"r'{_BAGS_DIR}/' + '",
-        LaunchConfiguration('bag_prefix'),
-        "' + '_' + __import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')",
-    ])
+    bag_output = PythonExpression(
+        [
+            f"r'{_BAGS_DIR}/' + '",
+            LaunchConfiguration("bag_prefix"),
+            "' + '_' + __import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')",
+        ]
+    )
 
     # Two separate ExecuteProcess actions gated by IfCondition because
     # we can't conditionally extend a plain list with LaunchConfiguration
     # at description-generation time.
 
     record_no_pc = TimerAction(
-        period=LaunchConfiguration('camera_delay'),
+        period=LaunchConfiguration("camera_delay"),
         actions=[
-            LogInfo(msg=['[bag_for_slam] Starting bag record → ', bag_output]),
+            LogInfo(msg=["[bag_for_slam] Starting bag record → ", bag_output]),
             ExecuteProcess(
                 cmd=[
-                    'ros2', 'bag', 'record',
-                    '--storage', LaunchConfiguration('storage'),
-                    '--qos-profile-overrides-path', qos_yaml,
-                    '--output', bag_output,
-                ] + CORE_TOPICS,
-                output='screen',
-                name='ros2_bag_record',
+                    "ros2",
+                    "bag",
+                    "record",
+                    "--storage",
+                    LaunchConfiguration("storage"),
+                    "--qos-profile-overrides-path",
+                    qos_yaml,
+                    "--output",
+                    bag_output,
+                ]
+                + CORE_TOPICS,
+                output="screen",
+                name="ros2_bag_record",
                 condition=IfCondition(
-                    PythonExpression(["'", LaunchConfiguration('enable_pointcloud'), "' == 'false'"])
+                    PythonExpression(
+                        ["'", LaunchConfiguration("enable_pointcloud"), "' == 'false'"]
+                    )
                 ),
             ),
         ],
     )
 
     record_with_pc = TimerAction(
-        period=LaunchConfiguration('camera_delay'),
+        period=LaunchConfiguration("camera_delay"),
         actions=[
             ExecuteProcess(
                 cmd=[
-                    'ros2', 'bag', 'record',
-                    '--storage', LaunchConfiguration('storage'),
-                    '--qos-profile-overrides-path', qos_yaml,
-                    '--output', bag_output,
-                ] + CORE_TOPICS + [POINTCLOUD_TOPIC],
-                output='screen',
-                name='ros2_bag_record_pc',
+                    "ros2",
+                    "bag",
+                    "record",
+                    "--storage",
+                    LaunchConfiguration("storage"),
+                    "--qos-profile-overrides-path",
+                    qos_yaml,
+                    "--output",
+                    bag_output,
+                ]
+                + CORE_TOPICS
+                + [POINTCLOUD_TOPIC],
+                output="screen",
+                name="ros2_bag_record_pc",
                 condition=IfCondition(
-                    PythonExpression(["'", LaunchConfiguration('enable_pointcloud'), "' == 'true'"])
+                    PythonExpression(
+                        ["'", LaunchConfiguration("enable_pointcloud"), "' == 'true'"]
+                    )
                 ),
             ),
         ],
@@ -238,23 +288,26 @@ def generate_launch_description():
     # LaunchDescription
     # ------------------------------------------------------------------
 
-    return LaunchDescription([
-        bag_prefix_arg,
-        camera_delay_arg,
-        enable_pointcloud_arg,
-        enable_rviz_arg,
-        storage_arg,
-
-        LogInfo(msg='[bag_for_slam] Starting RealSense D455 node...'),
-        realsense_node,
-        rviz_node,
-
-        LogInfo(msg=[
-            '[bag_for_slam] Camera started. Bag recording will begin in ',
-            LaunchConfiguration('camera_delay'),
-            ' seconds...',
-        ]),
-
-        record_no_pc,
-        record_with_pc,
-    ])
+    return LaunchDescription(
+        [
+            bag_prefix_arg,
+            camera_delay_arg,
+            fps_arg,
+            enable_pointcloud_arg,
+            enable_rviz_arg,
+            storage_arg,
+            LogInfo(msg="[bag_for_slam] Starting RealSense D455 node..."),
+            realsense_node,
+            imu_filter_node,
+            rviz_node,
+            LogInfo(
+                msg=[
+                    "[bag_for_slam] Camera started. Bag recording will begin in ",
+                    LaunchConfiguration("camera_delay"),
+                    " seconds...",
+                ]
+            ),
+            record_no_pc,
+            record_with_pc,
+        ]
+    )
