@@ -1,8 +1,10 @@
 """
-Launch RealSense D455 + ros2 bag record + RViz2 for RTABMap SLAM.
+Launch RealSense D455 + rosbag2 recorder + RViz2 for RTABMap SLAM.
 
 Starts the realsense2_camera node with settings tuned for RTABMap, opens
-RViz2 for live preview, then launches ros2 bag record after a short delay.
+RViz2 for live preview, then starts a record_gate node that waits for all
+sensor topics to confirm they are actually publishing before starting an
+in-process rosbag2 recorder. This avoids recording incomplete data at startup.
 
 Usage:
   ros2 launch record_for_slam bag_for_slam.launch.py
@@ -15,11 +17,10 @@ Usage:
 Recorded topics (RTABMap core):
   /camera/color/image_raw
   /camera/color/camera_info
-  /camera/depth/image_rect_raw
-  /camera/depth/camera_info
-  /camera/aligned_depth_to_color/image_raw
+  /camera/aligned_depth_to_color/image_raw   (depth aligned to color frame)
   /camera/aligned_depth_to_color/camera_info
   /camera/imu
+  /imu/filtered
   /tf  /tf_static
 
 Optional:
@@ -31,12 +32,10 @@ from pathlib import Path
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     LogInfo,
-    TimerAction,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     LaunchConfiguration,
@@ -61,8 +60,6 @@ _RVIZ_CFG = _PKG_DIR / "config" / "slam_preview.rviz"
 CORE_TOPICS = [
     "/camera/color/image_raw",
     "/camera/color/camera_info",
-    "/camera/depth/image_rect_raw",
-    "/camera/depth/camera_info",
     "/camera/aligned_depth_to_color/image_raw",
     "/camera/aligned_depth_to_color/camera_info",
     "/camera/imu",
@@ -89,12 +86,6 @@ def generate_launch_description():
         "bag_prefix",
         default_value="slam",
         description="Prefix for the output bag directory (saved to <pkg>/bags/)",
-    )
-
-    camera_delay_arg = DeclareLaunchArgument(
-        "camera_delay",
-        default_value="8.0",
-        description="Seconds to wait after camera node starts before recording begins",
     )
 
     enable_pointcloud_arg = DeclareLaunchArgument(
@@ -157,8 +148,11 @@ def generate_launch_description():
             # -- Point cloud (controlled by launch arg) --
             "pointcloud.enable": LaunchConfiguration("enable_pointcloud"),
             # -- TF --
+            # 0 = publish all camera transforms once as static (/tf_static).
+            # Dynamic TF (>0) causes "extrapolation into the future" errors
+            # during bag playback when RTAB-Map processing lags behind sim time.
             "publish_tf": "true",
-            "tf_publish_rate": "15.0",  # dynamic TF at 15 Hz
+            "tf_publish_rate": "0",
             # -- Namespace --
             # namespace='' + name='camera' → node FQN /camera
             # → topics at /camera/color/image_raw  (single-level prefix)
@@ -209,7 +203,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------
-    # ros2 bag record (delayed to let the camera node come up)
+    # record_gate — starts the in-process rosbag2 recorder once all sensors are live
     # ------------------------------------------------------------------
 
     qos_yaml = PathJoinSubstitution(
@@ -224,64 +218,34 @@ def generate_launch_description():
         ]
     )
 
-    # Two separate ExecuteProcess actions gated by IfCondition because
-    # we can't conditionally extend a plain list with LaunchConfiguration
-    # at description-generation time.
-
-    record_no_pc = TimerAction(
-        period=LaunchConfiguration("camera_delay"),
-        actions=[
-            LogInfo(msg=["[bag_for_slam] Starting bag record → ", bag_output]),
-            ExecuteProcess(
-                cmd=[
-                    "ros2",
-                    "bag",
-                    "record",
-                    "--storage",
-                    LaunchConfiguration("storage"),
-                    "--qos-profile-overrides-path",
-                    qos_yaml,
-                    "--output",
-                    bag_output,
-                ]
-                + CORE_TOPICS,
-                output="screen",
-                name="ros2_bag_record",
-                condition=IfCondition(
-                    PythonExpression(
-                        ["'", LaunchConfiguration("enable_pointcloud"), "' == 'false'"]
-                    )
-                ),
-            ),
-        ],
+    # Two Node instances (with / without point cloud) so that the topic list
+    # can be a plain Python literal passed as a parameter.
+    record_gate_no_pc = Node(
+        package="record_for_slam",
+        executable="record_gate",
+        name="record_gate",
+        output="screen",
+        parameters=[{
+            "bag_output":        bag_output,
+            "bag_storage":       LaunchConfiguration("storage"),
+            "qos_override_path": qos_yaml,
+            "record_topics":     CORE_TOPICS,
+        }],
+        condition=UnlessCondition(LaunchConfiguration("enable_pointcloud")),
     )
 
-    record_with_pc = TimerAction(
-        period=LaunchConfiguration("camera_delay"),
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    "ros2",
-                    "bag",
-                    "record",
-                    "--storage",
-                    LaunchConfiguration("storage"),
-                    "--qos-profile-overrides-path",
-                    qos_yaml,
-                    "--output",
-                    bag_output,
-                ]
-                + CORE_TOPICS
-                + [POINTCLOUD_TOPIC],
-                output="screen",
-                name="ros2_bag_record_pc",
-                condition=IfCondition(
-                    PythonExpression(
-                        ["'", LaunchConfiguration("enable_pointcloud"), "' == 'true'"]
-                    )
-                ),
-            ),
-        ],
+    record_gate_with_pc = Node(
+        package="record_for_slam",
+        executable="record_gate",
+        name="record_gate",
+        output="screen",
+        parameters=[{
+            "bag_output":        bag_output,
+            "bag_storage":       LaunchConfiguration("storage"),
+            "qos_override_path": qos_yaml,
+            "record_topics":     CORE_TOPICS + [POINTCLOUD_TOPIC],
+        }],
+        condition=IfCondition(LaunchConfiguration("enable_pointcloud")),
     )
 
     # ------------------------------------------------------------------
@@ -291,7 +255,6 @@ def generate_launch_description():
     return LaunchDescription(
         [
             bag_prefix_arg,
-            camera_delay_arg,
             fps_arg,
             enable_pointcloud_arg,
             enable_rviz_arg,
@@ -300,14 +263,8 @@ def generate_launch_description():
             realsense_node,
             imu_filter_node,
             rviz_node,
-            LogInfo(
-                msg=[
-                    "[bag_for_slam] Camera started. Bag recording will begin in ",
-                    LaunchConfiguration("camera_delay"),
-                    " seconds...",
-                ]
-            ),
-            record_no_pc,
-            record_with_pc,
+            LogInfo(msg="[bag_for_slam] Waiting for all sensors before recording..."),
+            record_gate_no_pc,
+            record_gate_with_pc,
         ]
     )
