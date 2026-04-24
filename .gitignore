@@ -1,0 +1,5 @@
+launch/__pycache__/
+outputs/
+databases/
+yolo_models/
+*.onnx
