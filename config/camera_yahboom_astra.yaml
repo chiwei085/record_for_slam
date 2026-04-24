@@ -1,0 +1,15 @@
+rgbd_input:
+  ros__parameters:
+    rgb_image_topic: /camera/color/image_raw
+    rgb_camera_info_topic: /camera/color/camera_info
+    depth_image_topic: /camera/depth/image_raw
+    depth_camera_info_topic: /camera/depth/camera_info
+    point_cloud_topic: /camera/depth/points
+    imu_raw_topic: ""
+    imu_topic: ""
+    use_point_cloud: false
+    approximate_sync: true
+    depth_registered_to_color: false
+    require_registered_depth: false
+    require_imu: false
+    qos_profile: sensor_data
