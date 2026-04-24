@@ -3,6 +3,7 @@ Usage:
   ros2 launch record_for_slam playback.launch.py bag:=slam_xxxxxxxx_yyyyyy
   ros2 launch record_for_slam playback.launch.py bag:=slam_xxxxxxxx_yyyyyy rate:=0.5
   ros2 launch record_for_slam playback.launch.py bag:=slam_xxxxxxxx_yyyyyy enable_rviz:=false
+  ros2 launch record_for_slam playback.launch.py bag:=slam_xxxxxxxx_yyyyyy image_focus_rviz:=false
 """
 
 from pathlib import Path
@@ -22,6 +23,7 @@ from launch_ros.substitutions import FindPackageShare
 _PKG_DIR = Path(__file__).resolve().parent.parent
 _BAGS_DIR = _PKG_DIR / "bags"
 _RVIZ_CFG = _PKG_DIR / "config" / "slam_preview.rviz"
+_RVIZ_IMAGE_FOCUS_CFG = _PKG_DIR / "config" / "slam_preview_image_focus.rviz"
 
 
 def generate_launch_description():
@@ -47,6 +49,12 @@ def generate_launch_description():
         "enable_rviz",
         default_value="true",
         description="Open RViz2 for preview",
+    )
+
+    image_focus_rviz_arg = DeclareLaunchArgument(
+        "image_focus_rviz",
+        default_value="true",
+        description="Use an RViz layout focused on RGB and depth images",
     )
 
     qos_yaml = PathJoinSubstitution(
@@ -94,11 +102,23 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("loop")),
     )
 
+    rviz_cfg = PythonExpression(
+        [
+            "'",
+            str(_RVIZ_IMAGE_FOCUS_CFG),
+            "' if '",
+            LaunchConfiguration("image_focus_rviz"),
+            "' == 'true' else '",
+            str(_RVIZ_CFG),
+            "'",
+        ]
+    )
+
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
         name="rviz2",
-        arguments=["-d", str(_RVIZ_CFG)],
+        arguments=["-d", rviz_cfg],
         parameters=[{"use_sim_time": True}],
         output="screen",
         condition=IfCondition(LaunchConfiguration("enable_rviz")),
@@ -110,7 +130,9 @@ def generate_launch_description():
             rate_arg,
             loop_arg,
             enable_rviz_arg,
+            image_focus_rviz_arg,
             LogInfo(msg=["[playback] Playing bag → ", bag_path]),
+            LogInfo(msg=["[playback] RViz config → ", rviz_cfg]),
             rviz_node,
             playback,
             playback_loop,

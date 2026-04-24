@@ -1,0 +1,57 @@
+# offline_semantic_mapper configuration
+# All fields are optional. CLI flags (--database, --model, --output) override these values.
+
+# --- Pipeline paths ----------------------------------------------------------
+# database_path: /path/to/rtabmap.db
+# model_path:    /path/to/yolo.onnx
+# output_dir:    /path/to/output
+
+# --- YOLO detector -----------------------------------------------------------
+detector:
+  confidence_threshold: 0.25   # Minimum detection confidence to keep [0, 1]
+  nms_iou_threshold: 0.45      # IoU threshold for non-maximum suppression [0, 1]
+  max_detections: 300          # Maximum number of detections per frame
+  class_agnostic_nms: false    # If true, NMS is applied across all classes
+  allowed_labels:              # Only these COCO labels are forwarded downstream
+    - person
+    - chair
+    - couch
+    - dining table
+    - tv
+    - laptop
+    - bottle
+    - potted plant
+    - backpack
+    - book
+
+# --- Observation projector ---------------------------------------------------
+projector:
+  min_confidence: 0.25         # Detections below this confidence are skipped
+  min_bbox_size_px: 10         # Bounding boxes smaller than this are skipped (px)
+  min_depth_m: 0.2             # Depth samples below this range are discarded (m)
+  max_depth_m: 8.0             # Depth samples above this range are discarded (m)
+  bbox_center_ratio: 0.3       # Fraction of bbox used as the central sampling ROI
+
+# --- Observation fusion ------------------------------------------------------
+fusion:
+  match_distance_m: 0.9        # Max distance to associate an observation to an
+                                # existing object (m)
+  ema_alpha: 0.3               # Exponential moving-average weight for position
+                                # updates [0, 1]; higher = faster adaptation
+  min_seen_count_to_keep: 2    # Objects seen fewer times than this are pruned
+  require_same_class: true     # Observations only match objects of the same class
+  keep_singletons: true        # Retain objects with seen_count == 1 after pruning
+  allowed_classes: []          # If non-empty, only these classes are processed
+  class_distance_overrides:    # Per-class match distance overrides
+    book: 0.7
+    tv: 1.0
+    laptop: 1.2
+    dining table: 1.5
+
+# --- Map cloud exporter ------------------------------------------------------
+map_cloud:
+  pixel_step: 2                # Sample every N-th pixel (higher = faster, sparser)
+  min_depth_m: 0.2             # Minimum depth to include in the cloud (m)
+  max_depth_m: 8.0             # Maximum depth to include in the cloud (m)
+  use_rgb: true                # Colorize point cloud with RGB data when available
+  voxel_leaf_size_m: 0.02      # Voxel grid leaf size for downsampling (m)
