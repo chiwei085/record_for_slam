@@ -23,6 +23,7 @@
  * depth_registered_to_color (bool, true) Logged for diagnostics.
  * require_registered_depth (bool, true)  Warn if false registration conflicts.
  * require_imu          (bool, true)      Gate on imu_topic if true.
+ * require_tf_static    (bool, false)     Gate on /tf_static if true.
  * qos_profile          (string, "sensor_data") Subscriber QoS preset.
  * required_tf_frames   (string[], [])    child_frame_id values that must
  *                                        appear in /tf_static.  If empty,
@@ -216,6 +217,7 @@ public:
         declare_parameter("depth_registered_to_color", false);
         declare_parameter("require_registered_depth", false);
         declare_parameter("require_imu", true);
+        declare_parameter("require_tf_static", false);
         declare_parameter("qos_profile", "sensor_data");
         declare_parameter("required_tf_frames", std::vector<std::string>{});
 
@@ -242,6 +244,8 @@ public:
         const auto require_registered_depth =
             get_parameter("require_registered_depth").as_bool();
         const auto require_imu = get_parameter("require_imu").as_bool();
+        const auto require_tf_static =
+            get_parameter("require_tf_static").as_bool();
         const auto qos_profile = get_parameter("qos_profile").as_string();
 
         required_.fill(false);
@@ -266,7 +270,7 @@ public:
         required_[gate_idx(Gate::PointCloud)] =
             use_point_cloud && !point_cloud_topic.empty();
         required_[gate_idx(Gate::Imu)] = require_imu && !imu_topic.empty();
-        required_[gate_idx(Gate::TfStatic)] = true;
+        required_[gate_idx(Gate::TfStatic)] = require_tf_static;
 
         if (required_[gate_idx(Gate::Color)]) {
             color_sub_ = create_subscription<Image>(
@@ -389,6 +393,8 @@ public:
                     imu_topic.empty() ? "<disabled>" : imu_topic.c_str());
         RCLCPP_INFO(get_logger(), "require_imu: %s",
                     require_imu ? "true" : "false");
+        RCLCPP_INFO(get_logger(), "require_tf_static: %s",
+                    require_tf_static ? "true" : "false");
         RCLCPP_INFO(get_logger(), "approximate_sync: %s",
                     approximate_sync ? "true" : "false");
         RCLCPP_INFO(get_logger(), "depth_registered_to_color: %s",

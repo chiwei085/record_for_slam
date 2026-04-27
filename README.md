@@ -9,6 +9,9 @@ ROS 2 Humble tools for RGB-D bag recording, offline RTAB-Map replay, and semanti
 > RGB-D topic assumptions are now configured through camera profile YAML files under `config/`.
 > The package supports general RGB-D sensor inputs through camera profiles. `bag_for_slam.launch.py` can auto-load a built-in driver bringup, disable driver launch, or include a custom driver launch file.
 
+> [!WARNING]
+> `offline_rtabmap.launch.py` still targets RTAB-Map's registered RGB-D workflow. A bag recorded from an Astra/Orbbec profile with raw `/camera/depth/image_raw` should not be used by itself to conclude that "the recording quality is bad" until aligned-depth and sync assumptions have been ruled out.
+
 ## Workflow
 
 1. Use `bag_for_slam.launch.py` to gate and record RGB-D topics into a ROS 2 bag.
@@ -67,6 +70,14 @@ ros2 launch record_for_slam bag_for_slam.launch.py camera_profile:=yahboom_astra
 # Bring your own driver
 ros2 launch record_for_slam bag_for_slam.launch.py driver_bringup:=none
 
+# Delegate robot control bringup to this launch session
+ros2 launch record_for_slam bag_for_slam.launch.py \
+  robot_bringup:=/abs/path/to/bringup_yahboom_r2_control.launch.py
+
+# Also record robot/control topics with a YAML list
+ros2 launch record_for_slam bag_for_slam.launch.py \
+  robot_record_topics:="['/cmd_vel', '/joy', '/odom_raw']"
+
 # Use a custom driver launch file
 ros2 launch record_for_slam bag_for_slam.launch.py \
   driver_bringup:=/abs/path/to/driver.launch.py
@@ -76,7 +87,7 @@ ros2 launch record_for_slam bag_for_slam.launch.py \
   camera_config:=/abs/path/to/camera_profile.yaml
 ```
 
-Default gate conditions: RGB image, depth image, RGB/depth `camera_info`, `/tf_static`, and `/imu/filtered` only when the active profile enables IMU.
+Default gate conditions follow the active profile: RGB image, depth image, RGB/depth `camera_info`, plus `/imu/filtered` and `/tf_static` only when that profile requires them.
 
 > [!WARNING]
 > `bag_for_slam.launch.py` is generic only at the recorder/gate layer. Driver bringup is controlled separately by `driver_bringup:=auto|none|/abs/path/to/driver.launch.py`.
@@ -87,6 +98,9 @@ Default gate conditions: RGB image, depth image, RGB/depth `camera_info`, `/tf_s
 # Play back with RViz2 preview
 ros2 launch record_for_slam playback.launch.py bag:=<bag_directory_name>
 
+# Play back a bag outside src/record_for_slam/bags/
+ros2 launch record_for_slam playback.launch.py bag:=/abs/path/to/bag_dir
+
 # Half speed
 ros2 launch record_for_slam playback.launch.py bag:=<bag_directory_name> rate:=0.5
 
@@ -95,6 +109,16 @@ ros2 launch record_for_slam playback.launch.py bag:=<bag_directory_name> loop:=t
 
 # Play without RViz2
 ros2 launch record_for_slam playback.launch.py bag:=<bag_directory_name> enable_rviz:=false
+
+# Use the Astra/Yahboom camera profile so RViz follows /camera/depth/image_raw
+ros2 launch record_for_slam playback.launch.py \
+  bag:=/abs/path/to/bag_dir \
+  camera_profile:=yahboom_astra
+
+# Use a custom camera profile YAML
+ros2 launch record_for_slam playback.launch.py \
+  bag:=/abs/path/to/bag_dir \
+  camera_config:=/abs/path/to/camera_profile.yaml
 ```
 
 ## Offline RTAB-Map Replay
@@ -107,6 +131,17 @@ ros2 launch record_for_slam offline_rtabmap.launch.py bag_path:=/abs/path/to/bag
 ros2 launch record_for_slam offline_rtabmap.launch.py \
   bag_path:=/abs/path/to/bag_dir \
   camera_profile:=yahboom_astra
+
+# Override replay sync tolerance if the bag's color/depth timestamps are wider apart
+ros2 launch record_for_slam offline_rtabmap.launch.py \
+  bag_path:=/abs/path/to/bag_dir \
+  camera_config:=/abs/path/to/camera_profile.yaml
+
+# Force a debug replay even when the profile says depth is not aligned to color
+ros2 launch record_for_slam offline_rtabmap.launch.py \
+  bag_path:=/abs/path/to/bag_dir \
+  camera_profile:=yahboom_astra \
+  allow_unregistered_depth:=true
 
 # Replay with a custom camera profile YAML
 ros2 launch record_for_slam offline_rtabmap.launch.py \
@@ -128,13 +163,16 @@ Built-in profiles:
 | `realsense`     | `/camera/color/image_raw` | `/camera/aligned_depth_to_color/image_raw` | `true`                 | `true`       |
 | `yahboom_astra` | `/camera/color/image_raw` | `/camera/depth/image_raw`                  | `false`                | `false`      |
 
-- Yahboom official documentation lists `/camera/depth/image_raw`, not `/camera/aligned_depth_to_color/image_raw`.
-- `depth_registered_to_color=false` is the conservative default for `yahboom_astra`.
-- Yahboom/Orbbec-style topic names in this repo are assumptions until verified on the target robot.
+- `yahboom_astra` is the raw-depth profile that matches the known Yahboom/Orbbec ROS 2 topic layout from the robot-side codebase.
+- `yahboom_astra` now uses verified ROSMASTER R2 topics, not guessed topic names.
+- RTAB-Map's standard RGB-D launch path expects registered depth. The upstream `rtabmap.launch` examples use registered topics like `depth_registered` / `aligned_depth_to_color`.
+- Orbbec SDK ROS 2 documentation says depth-to-color alignment must be explicitly enabled with `depth_registration:=true`; raw `/camera/depth/image_raw` should not be treated as aligned by default.
+- For camera profiles other than the validated ROSMASTER R2 Astra path, verify actual topic names on the target robot with `ros2 topic list`, `ros2 topic info`, and `ros2 topic echo`.
+- New camera profiles inherit `require_registered_depth: false`, `require_tf_static: false`, and `replay_approx_sync_max_interval: 0.1` by default. Deployment-specific robot topics are configured separately at launch time.
 
 More detail and validation commands are documented in `docs/camera_profiles.md`.
 
-Minimal custom profile example:
+Minimal custom profile example for raw-depth record/playback:
 
 ```yaml
 rgbd_input:
@@ -149,6 +187,8 @@ rgbd_input:
     imu_raw_topic: ""
     imu_topic: ""
     qos_profile: sensor_data
+    approx_sync_max_interval: 0.02
+    replay_approx_sync_max_interval: 0.1
 ```
 
 Typical RealSense profile topics:
@@ -186,6 +226,32 @@ For `yahboom_astra`, IMU topics are disabled by default:
 - `imu_raw_topic: ""`
 - `imu_topic: ""`
 - `require_imu: false`
+
+For `offline_rtabmap.launch.py`, `yahboom_astra` now follows the validated
+Yahboom RTAB-Map topology more closely:
+
+- `use_rgbd_sync: true` starts `rtabmap_sync/rgbd_sync`
+- RTAB-Map subscribes to the synchronized `rgbd_image` output instead of directly syncing raw RGB/depth topics itself
+
+For `bag_for_slam.launch.py`, robot/base behavior is separated from the camera profile:
+
+- `driver_bringup:=auto` uses `launch/bringup_<camera_profile>.launch.py` when available
+- `robot_bringup:=none` is the default; pass an explicit launch file path if you want this package to start robot control too
+- `robot_record_topics:=...` accepts a YAML list of extra robot/control topics, so deployment-specific topics are decoupled from camera profiles
+- `launch/bringup_yahboom_r2_control.launch.py` stays in this repo only as a convenience reference path
+
+For Astra/Orbbec on ROS 2 Humble, validate the driver before changing this profile:
+
+- `ros2_astra_camera` README: `https://github.com/orbbec/ros2_astra_camera`
+- Orbbec SDK ROS 2 alignment docs: `https://orbbec.github.io/OrbbecSDK_ROS2/en/source/camera_devices/5_advanced_guide/configuration/align_depth_color.html`
+- RTAB-Map launch docs: `https://docs.ros.org/en/rolling/p/rtabmap_launch/__README.html`
+
+Practical interpretation:
+
+- If the robot publishes `/camera/depth/image_raw`, assume it is raw depth unless you have verified otherwise.
+- If the driver can be started with depth alignment enabled, record the aligned depth topic and update the profile to match the actual published topic names.
+- Keep `approx_sync_max_interval` tight. This repo now defaults it to `0.02` seconds instead of `0.1`.
+- Keep `replay_approx_sync_max_interval` looser than live recording when needed. This repo defaults replay to `0.1` seconds to tolerate bag playback skew.
 
 ## ONNX Runtime And YOLO
 

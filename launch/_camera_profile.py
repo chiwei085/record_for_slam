@@ -14,10 +14,15 @@ CAMERA_PROFILE_DEFAULTS = {
     "imu_raw_topic": "/camera/imu",
     "imu_topic": "/imu/filtered",
     "use_point_cloud": False,
+    "use_rgbd_sync": False,
     "approximate_sync": True,
+    "approx_sync_max_interval": 0.02,
+    "replay_approx_sync_max_interval": 0.1,
     "depth_registered_to_color": False,
     "require_registered_depth": False,
     "require_imu": True,
+    "require_tf_static": False,
+    "required_tf_frames": [],
     "qos_profile": "sensor_data",
 }
 
@@ -74,7 +79,14 @@ def resolve_use_point_cloud(context, enable_pointcloud_sub, camera):
 
 
 def build_camera_profile_logs(prefix, config_path, camera, warnings,
-                              loaded_key_count, use_point_cloud=None):
+                              loaded_key_count, use_point_cloud=None,
+                              include_replay_params=False):
+    approx_sync = bool(camera["approximate_sync"])
+    approx_sync_interval = (
+        str(camera["approx_sync_max_interval"])
+        if approx_sync
+        else "<n/a (approximate_sync=false)>"
+    )
     logs = [
         LogInfo(msg=f"[{prefix}] Camera config: {config_path}"),
         LogInfo(msg=f"[{prefix}] loaded_profile_keys: {loaded_key_count}"),
@@ -85,11 +97,26 @@ def build_camera_profile_logs(prefix, config_path, camera, warnings,
         LogInfo(msg=f"[{prefix}] point_cloud_topic: {camera['point_cloud_topic'] or '<disabled>'}"),
         LogInfo(msg=f"[{prefix}] imu_raw_topic: {camera['imu_raw_topic'] or '<disabled>'}"),
         LogInfo(msg=f"[{prefix}] imu_topic: {camera['imu_topic'] or '<disabled>'}"),
+        LogInfo(msg=f"[{prefix}] use_rgbd_sync: {str(camera['use_rgbd_sync']).lower()}"),
         LogInfo(msg=f"[{prefix}] require_imu: {str(camera['require_imu']).lower()}"),
-        LogInfo(msg=f"[{prefix}] approximate_sync: {str(camera['approximate_sync']).lower()}"),
+        LogInfo(msg=f"[{prefix}] require_tf_static: {str(camera['require_tf_static']).lower()}"),
+        LogInfo(msg=f"[{prefix}] required_tf_frames: {camera['required_tf_frames'] or '<none>'}"),
+        LogInfo(msg=f"[{prefix}] approximate_sync: {str(approx_sync).lower()}"),
+        LogInfo(msg=f"[{prefix}] approx_sync_max_interval: {approx_sync_interval}"),
         LogInfo(msg=f"[{prefix}] depth_registered_to_color: {str(camera['depth_registered_to_color']).lower()}"),
+        LogInfo(msg=f"[{prefix}] require_registered_depth: {str(camera['require_registered_depth']).lower()}"),
         LogInfo(msg=f"[{prefix}] qos_profile: {camera['qos_profile']}"),
     ]
+    if include_replay_params:
+        logs.insert(
+            len(logs) - 3,
+            LogInfo(
+                msg=(
+                    f"[{prefix}] replay_approx_sync_max_interval: "
+                    f"{camera['replay_approx_sync_max_interval']}"
+                )
+            ),
+        )
     if use_point_cloud is not None:
         logs.insert(
             7, LogInfo(msg=f"[{prefix}] use_point_cloud: {str(use_point_cloud).lower()}")

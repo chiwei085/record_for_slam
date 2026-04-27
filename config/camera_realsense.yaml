@@ -8,8 +8,13 @@ rgbd_input:
     imu_raw_topic: /camera/imu
     imu_topic: /imu/filtered
     use_point_cloud: false
+    use_rgbd_sync: false
     approximate_sync: true
+    approx_sync_max_interval: 0.02
+    replay_approx_sync_max_interval: 0.1
     depth_registered_to_color: true
     require_registered_depth: true
     require_imu: true
+    require_tf_static: true
+    required_tf_frames: []
     qos_profile: sensor_data

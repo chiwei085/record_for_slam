@@ -49,10 +49,20 @@ _PKG_DIR = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 
-def _launch_rtabmap_nodes(context, database_path_sub, delete_db_sub, viz_sub):
+def _launch_rtabmap_nodes(
+    context,
+    database_path_sub,
+    delete_db_sub,
+    viz_sub,
+    allow_unregistered_depth_sub,
+):
     db_path = context.perform_substitution(database_path_sub)
     delete_db = context.perform_substitution(delete_db_sub).lower() == "true"
     viz_enabled = context.perform_substitution(viz_sub).lower() == "true"
+    allow_unregistered_depth = (
+        context.perform_substitution(allow_unregistered_depth_sub).lower()
+        == "true"
+    )
     extra_args = ["--delete_db_on_start"] if delete_db else []
     _, _, config_path, camera, warnings, loaded_key_count = resolve_camera_profile(
         context,
@@ -61,83 +71,130 @@ def _launch_rtabmap_nodes(context, database_path_sub, delete_db_sub, viz_sub):
         LaunchConfiguration("camera_config"),
     )
     remappings = build_rgbd_remappings(camera)
+    use_rgbd_sync = bool(camera["use_rgbd_sync"])
+    replay_approx_sync_max_interval = float(camera["replay_approx_sync_max_interval"])
     actions = build_camera_profile_logs(
         "record_for_slam/offline_rtabmap",
         config_path,
         camera,
         warnings,
         loaded_key_count,
+        include_replay_params=True,
     )
 
-    if not camera["depth_registered_to_color"]:
+    requires_registered_depth = bool(camera["require_registered_depth"])
+    depth_registered_to_color = bool(camera["depth_registered_to_color"])
+    if requires_registered_depth and not depth_registered_to_color:
+        if not allow_unregistered_depth:
+            raise RuntimeError(
+                "Selected camera profile marks depth as not registered to color while offline RTAB-Map "
+                "requires aligned RGB-D input. For Astra/Orbbec, verify the driver and enable depth "
+                "registration first, then update the camera profile. To bypass this guard for debugging only, "
+                "set allow_unregistered_depth:=true."
+            )
+        actions.append(
+            LogInfo(
+                msg=(
+                    "[record_for_slam/offline_rtabmap][WARN] allow_unregistered_depth=true overrides the "
+                    "profile safety check; replay results cannot be used to blame recording quality alone"
+                )
+            )
+        )
+    elif not depth_registered_to_color:
         actions.append(
             LogInfo(
                 msg=(
                     "[record_for_slam/offline_rtabmap][WARN] "
-                    "depth_registered_to_color=false, but this node assumes color-depth pixel alignment"
+                    "depth_registered_to_color=false and require_registered_depth=false; replay may still fail "
+                    "if downstream RGB-D consumers assume color-depth pixel alignment"
                 )
             )
         )
 
+    if use_rgbd_sync:
+        actions.append(
+            Node(
+                package="rtabmap_sync",
+                executable="rgbd_sync",
+                name="rgbd_sync",
+                output="screen",
+                parameters=[
+                    {
+                        "use_sim_time": True,
+                        "approx_sync": bool(camera["approximate_sync"]),
+                        "approx_sync_max_interval": replay_approx_sync_max_interval,
+                        "qos": 2,
+                        "qos_camera_info": 2,
+                    }
+                ],
+                remappings=[
+                    ("rgb/image", camera["rgb_image_topic"]),
+                    ("depth/image", camera["depth_image_topic"]),
+                    ("rgb/camera_info", camera["rgb_camera_info_topic"]),
+                    ("depth/camera_info", camera["depth_camera_info_topic"]),
+                    ("rgbd_image", "rgbd_image"),
+                ],
+            )
+        )
+
+    rgbd_odometry_params = {
+        "use_sim_time": True,
+        "subscribe_rgb": not use_rgbd_sync,
+        "subscribe_depth": not use_rgbd_sync,
+        "subscribe_rgbd": use_rgbd_sync,
+        "subscribe_imu": bool(camera["require_imu"] and camera["imu_topic"]),
+        "wait_imu_to_init": bool(camera["require_imu"] and camera["imu_topic"]),
+        "approx_sync": bool(camera["approximate_sync"]),
+        "approx_sync_max_interval": replay_approx_sync_max_interval,
+        "queue_size": 20,
+        "frame_id": "camera_link",
+    }
+    rgbd_odometry_remappings = [("rgbd_image", "rgbd_image")] if use_rgbd_sync else list(remappings)
+    if use_rgbd_sync and camera["require_imu"] and camera["imu_topic"]:
+        rgbd_odometry_remappings.append(("imu", camera["imu_topic"]))
     rgbd_odometry = Node(
         package="rtabmap_odom",
         executable="rgbd_odometry",
         name="rgbd_odometry",
         output="screen",
-        parameters=[
-            {
-                "use_sim_time": True,
-                "subscribe_rgb": True,
-                "subscribe_depth": True,
-                "subscribe_imu": bool(camera["require_imu"] and camera["imu_topic"]),
-                "wait_imu_to_init": bool(camera["require_imu"] and camera["imu_topic"]),
-                "approx_sync": bool(camera["approximate_sync"]),
-                "approx_sync_max_interval": 0.1,  # 100ms: looser sync for bag replay
-                "queue_size": 20,
-                "frame_id": "camera_link",
-            }
-        ],
-        remappings=remappings,
+        parameters=[rgbd_odometry_params],
+        remappings=rgbd_odometry_remappings,
     )
 
+    rtabmap_params = {
+        "use_sim_time": True,
+        "subscribe_depth": not use_rgbd_sync,
+        "subscribe_rgb": not use_rgbd_sync,
+        "subscribe_rgbd": use_rgbd_sync,
+        "approx_sync": bool(camera["approximate_sync"]),
+        "approx_sync_max_interval": replay_approx_sync_max_interval,
+        "frame_id": "camera_link",
+        "odom_frame_id": "odom",
+        "database_path": db_path,
+        "subscribe_imu": bool(camera["require_imu"] and camera["imu_topic"]),
+        "queue_size": 20,
+        "Mem/UseOdomGravity": "true",
+        "RGBD/ForceOdom3DoF": "false",
+        "Grid/3D": "true",
+        "Grid/DepthDecimation": "2",
+        "Grid/RayTracing": "false",
+        "Grid/RangeMin": "0.2",
+        "Grid/RangeMax": "4.0",
+        "Grid/MaxObstacleHeight": "2.0",
+        "RGBD/ProximityBySpace": "true",
+        "Rtabmap/TimeThr": "0",
+    }
+    rtabmap_remappings = [("rgbd_image", "rgbd_image")] if use_rgbd_sync else list(remappings)
+    if use_rgbd_sync and camera["require_imu"] and camera["imu_topic"]:
+        rtabmap_remappings.append(("imu", camera["imu_topic"]))
     rtabmap_node = Node(
         package="rtabmap_slam",
         executable="rtabmap",
         name="rtabmap",
         output="screen",
         arguments=extra_args,
-        parameters=[
-            {
-                "use_sim_time": True,
-                "subscribe_depth": True,
-                "subscribe_rgb": True,
-                "approx_sync": bool(camera["approximate_sync"]),
-                "frame_id": "camera_link",
-                "odom_frame_id": "odom",
-                "database_path": db_path,
-                # IMU gravity-aided odometry correction when an imu_topic is provided
-                "subscribe_imu": bool(camera["require_imu"] and camera["imu_topic"]),
-                "queue_size": 20,
-                "Mem/UseOdomGravity": "true",
-                # Override ini defaults that are wrong for a handheld 6-DoF camera
-                "RGBD/ForceOdom3DoF": "false",  # default is true in some builds; handheld needs full 6-DoF
-                # Occupancy grid tuning for offline RGB-D mapping
-                "Grid/3D": "true",               # store colored 3D voxels per keyframe
-                "Grid/DepthDecimation": "2",     # downsample depth 2x (320x240) before voxelising; default 4 is too coarse
-                "Grid/RayTracing": "false",      # disabled: ray tracing in 3D creates long free-space spikes when camera tilts
-                "Grid/RangeMin": "0.2",
-                "Grid/RangeMax": "4.0",
-                # MinGroundHeight/MaxGroundHeight intentionally omitted (defaults = 0.0):
-                # disables height filtering and lets normal-based segmentation classify
-                # ground vs obstacles — more robust for a handheld camera at variable height.
-                "Grid/MaxObstacleHeight": "2.0",
-                # Mapping quality
-                "RGBD/ProximityBySpace": "true",
-                # Offline: no time limit — process every frame (0 = disabled)
-                "Rtabmap/TimeThr": "0",
-            }
-        ],
-        remappings=remappings,
+        parameters=[rtabmap_params],
+        remappings=rtabmap_remappings,
     )
 
     rtabmap_viz = Node(
@@ -145,7 +202,13 @@ def _launch_rtabmap_nodes(context, database_path_sub, delete_db_sub, viz_sub):
         executable="rtabmap_viz",
         name="rtabmap_viz",
         output="screen",
-        parameters=[{"use_sim_time": True, "approx_sync": bool(camera["approximate_sync"])}],
+        parameters=[
+            {
+                "use_sim_time": True,
+                "approx_sync": bool(camera["approximate_sync"]),
+                "approx_sync_max_interval": replay_approx_sync_max_interval,
+            }
+        ],
         remappings=[
             ("rgb/image", camera["rgb_image_topic"]),
             ("rgb/camera_info", camera["rgb_camera_info_topic"]),
@@ -208,6 +271,12 @@ def generate_launch_description():
         description="Absolute path to a camera profile YAML. Overrides camera_profile when set.",
     )
 
+    allow_unregistered_depth_arg = DeclareLaunchArgument(
+        "allow_unregistered_depth",
+        default_value="false",
+        description="Run RTAB-Map even when the profile says depth is not registered to color; debugging only",
+    )
+
     rtabmap_delay_arg = DeclareLaunchArgument(
         "rtabmap_delay",
         default_value="10.0",
@@ -223,6 +292,7 @@ def generate_launch_description():
             "database_path_sub": database_path,
             "delete_db_sub": LaunchConfiguration("delete_db"),
             "viz_sub": LaunchConfiguration("viz"),
+            "allow_unregistered_depth_sub": LaunchConfiguration("allow_unregistered_depth"),
         },
     )
 
@@ -267,6 +337,7 @@ def generate_launch_description():
             viz_arg,
             camera_profile_arg,
             camera_config_arg,
+            allow_unregistered_depth_arg,
             rtabmap_delay_arg,
             LogInfo(msg=["[record_for_slam/offline_rtabmap] Starting RTABMap -> db: ", database_path]),
             rtabmap_nodes,

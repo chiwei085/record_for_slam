@@ -1,3 +1,5 @@
+# Topic names verified on Yahboom ROSMASTER R2 from the on-robot workspace
+# and Yahboom navigation / vision nodes.
 rgbd_input:
   ros__parameters:
     rgb_image_topic: /camera/color/image_raw
@@ -8,8 +10,13 @@ rgbd_input:
     imu_raw_topic: ""
     imu_topic: ""
     use_point_cloud: false
+    use_rgbd_sync: true
     approximate_sync: true
+    approx_sync_max_interval: 0.02
+    replay_approx_sync_max_interval: 0.1
     depth_registered_to_color: false
     require_registered_depth: false
     require_imu: false
+    require_tf_static: false
+    required_tf_frames: []
     qos_profile: sensor_data

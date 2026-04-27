@@ -8,6 +8,7 @@ Usage:
   ros2 launch record_for_slam bag_for_slam.launch.py enable_pointcloud:=true
   ros2 launch record_for_slam bag_for_slam.launch.py fps:=15
   ros2 launch record_for_slam bag_for_slam.launch.py driver_bringup:=none
+  ros2 launch record_for_slam bag_for_slam.launch.py robot_bringup:=none
   # bags saved to: src/record_for_slam/bags/<prefix>_YYYYMMDD_HHMMSS/
 
 Recorded topics are selected from the active camera profile YAML.
@@ -32,6 +33,7 @@ from launch.substitutions import (
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+import yaml
 
 _LAUNCH_DIR = Path(__file__).resolve().parent
 if str(_LAUNCH_DIR) not in sys.path:
@@ -119,8 +121,61 @@ def _build_driver_bringup_actions(context):
     ]
 
 
+def _build_robot_bringup_actions(context):
+    robot_bringup = context.perform_substitution(LaunchConfiguration("robot_bringup"))
+
+    if robot_bringup == "none":
+        return [LogInfo(msg="[bag_for_slam] robot_bringup=none; not starting robot control")]
+
+    if robot_bringup == "auto":
+        return [
+            LogInfo(
+                msg=(
+                    "[bag_for_slam][WARN] robot_bringup:=auto is no longer supported. "
+                    "Start robot control yourself or set robot_bringup:=/abs/path/to/control.launch.py"
+                )
+            )
+        ]
+
+    bringup_path = Path(robot_bringup)
+    if not bringup_path.is_file():
+        raise FileNotFoundError(f"robot_bringup launch file not found: {bringup_path}")
+
+    return [
+        LogInfo(msg=f"[bag_for_slam] Starting robot control bringup: {bringup_path}"),
+        IncludeLaunchDescription(PythonLaunchDescriptionSource(str(bringup_path))),
+    ]
+
+
+def _resolve_robot_record_topics(context):
+    raw_value = context.perform_substitution(
+        LaunchConfiguration("robot_record_topics")
+    ).strip()
+    if raw_value == "":
+        return []
+
+    parsed = yaml.safe_load(raw_value)
+    if parsed is None:
+        return []
+    if isinstance(parsed, str):
+        return [parsed] if parsed else []
+    if not isinstance(parsed, list):
+        raise ValueError(
+            "robot_record_topics must be empty, a YAML string, or a YAML list of topic names"
+        )
+
+    topics = []
+    for item in parsed:
+        if not isinstance(item, str):
+            raise ValueError("robot_record_topics entries must be strings")
+        if item:
+            topics.append(item)
+    return topics
+
+
 def _build_camera_input_actions(context, qos_yaml, bag_output):
     _, _, config_path, camera, warnings, loaded_key_count, use_point_cloud = _resolve_camera_inputs(context)
+    robot_record_topics = _resolve_robot_record_topics(context)
 
     record_topics = [
         topic
@@ -138,6 +193,7 @@ def _build_camera_input_actions(context, qos_yaml, bag_output):
     ]
     if use_point_cloud and camera["point_cloud_topic"]:
         record_topics.append(camera["point_cloud_topic"])
+    record_topics.extend(robot_record_topics)
 
     actions = build_camera_profile_logs(
         "bag_for_slam",
@@ -146,6 +202,9 @@ def _build_camera_input_actions(context, qos_yaml, bag_output):
         warnings,
         loaded_key_count,
         use_point_cloud=use_point_cloud,
+    )
+    actions.append(
+        LogInfo(msg=f"[bag_for_slam] robot_record_topics: {robot_record_topics or '<none>'}")
     )
     actions.append(
         Node(
@@ -169,6 +228,8 @@ def _build_camera_input_actions(context, qos_yaml, bag_output):
                 "depth_registered_to_color": bool(camera["depth_registered_to_color"]),
                 "require_registered_depth": bool(camera["require_registered_depth"]),
                 "require_imu": bool(camera["require_imu"]),
+                "require_tf_static": bool(camera["require_tf_static"]),
+                "required_tf_frames": list(camera["required_tf_frames"]),
                 "qos_profile": camera["qos_profile"],
             }],
         ),
@@ -263,6 +324,18 @@ def generate_launch_description():
         description="auto: use bringup_<camera_profile>.launch.py, none: expect external driver, or absolute path to a launch file",
     )
 
+    robot_bringup_arg = DeclareLaunchArgument(
+        "robot_bringup",
+        default_value="none",
+        description="none: disable robot control bringup, auto: deprecated/no-op, or absolute path to a launch file",
+    )
+
+    robot_record_topics_arg = DeclareLaunchArgument(
+        "robot_record_topics",
+        default_value="",
+        description="YAML list of extra robot/control topics to record, e.g. ['/cmd_vel', '/joy']",
+    )
+
     # ------------------------------------------------------------------
     # RViz2
     # ------------------------------------------------------------------
@@ -301,6 +374,7 @@ def generate_launch_description():
     )
 
     driver_input = OpaqueFunction(function=_build_driver_bringup_actions)
+    robot_input = OpaqueFunction(function=_build_robot_bringup_actions)
 
     # ------------------------------------------------------------------
     # LaunchDescription
@@ -316,7 +390,10 @@ def generate_launch_description():
             camera_profile_arg,
             camera_config_arg,
             driver_bringup_arg,
+            robot_bringup_arg,
+            robot_record_topics_arg,
             driver_input,
+            robot_input,
             rviz_node,
             LogInfo(msg="[bag_for_slam] Waiting for all sensors before recording..."),
             camera_input,
