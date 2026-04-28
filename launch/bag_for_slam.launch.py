@@ -9,13 +9,16 @@ Usage:
   ros2 launch record_for_slam bag_for_slam.launch.py fps:=15
   ros2 launch record_for_slam bag_for_slam.launch.py driver_bringup:=none
   ros2 launch record_for_slam bag_for_slam.launch.py robot_bringup:=none
-  # bags saved to: src/record_for_slam/bags/<prefix>_YYYYMMDD_HHMMSS/
+  # bags saved to: <bag_dir>/<prefix>_YYYYMMDD_HHMMSS/
 
 Recorded topics are selected from the active camera profile YAML.
 """
 
 from pathlib import Path
+import atexit
 import sys
+import tempfile
+from typing import Any
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -24,7 +27,6 @@ from launch.actions import (
     LogInfo,
     OpaqueFunction,
 )
-from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     LaunchConfiguration,
@@ -39,7 +41,7 @@ _LAUNCH_DIR = Path(__file__).resolve().parent
 if str(_LAUNCH_DIR) not in sys.path:
     sys.path.insert(0, str(_LAUNCH_DIR))
 
-from _camera_profile import (
+from _camera_profile import (  # noqa: E402
     build_camera_profile_logs,
     resolve_camera_profile,
     resolve_use_point_cloud,
@@ -54,13 +56,14 @@ _RVIZ_CFG = _PKG_DIR / "config" / "slam_preview.rviz"
 
 
 def _resolve_camera_inputs(context):
-    (camera_profile, camera_config, config_path, camera, warnings,
-     loaded_key_count) = resolve_camera_profile(
-         context,
-         _PKG_DIR,
-         LaunchConfiguration("camera_profile"),
-         LaunchConfiguration("camera_config"),
-     )
+    (camera_profile, camera_config, config_path, camera, warnings, loaded_key_count) = (
+        resolve_camera_profile(
+            context,
+            _PKG_DIR,
+            LaunchConfiguration("camera_profile"),
+            LaunchConfiguration("camera_config"),
+        )
+    )
     use_point_cloud = resolve_use_point_cloud(
         context, LaunchConfiguration("enable_pointcloud"), camera
     )
@@ -75,13 +78,67 @@ def _resolve_camera_inputs(context):
     )
 
 
-def _build_driver_bringup_actions(context):
-    camera_profile, camera_config, _, _, _, _, use_point_cloud = _resolve_camera_inputs(context)
+def _rewrite_rviz_topics(template_path: Path, camera: dict) -> str:
+    with template_path.open("r", encoding="utf-8") as handle:
+        rviz_config = yaml.safe_load(handle)
+
+    displays = rviz_config.get("Visualization Manager", {}).get("Displays", [])
+    for display in displays:
+        name = display.get("Name")
+        topic = display.get("Topic")
+        if not isinstance(topic, dict):
+            continue
+        if name == "Color Image":
+            topic["Value"] = camera["rgb_image_topic"]
+        elif name == "Depth Image":
+            topic["Value"] = camera["depth_image_topic"]
+        elif name == "PointCloud2" and camera["point_cloud_topic"]:
+            topic["Value"] = camera["point_cloud_topic"]
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix=f"{template_path.stem}_",
+        suffix=".rviz",
+        delete=False,
+        encoding="utf-8",
+    ) as handle:
+        yaml.safe_dump(rviz_config, handle, sort_keys=False)
+        atexit.register(lambda path=handle.name: Path(path).unlink(missing_ok=True))
+        return handle.name
+
+
+def _build_rviz_node(context) -> list[Any]:
+    enable_rviz = context.perform_substitution(LaunchConfiguration("enable_rviz"))
+    if enable_rviz.lower() != "true":
+        return []
+
+    _, _, _, camera, _, _, _ = _resolve_camera_inputs(context)
+    rviz_cfg = _rewrite_rviz_topics(_RVIZ_CFG, camera)
+    return [
+        LogInfo(msg=f"[bag_for_slam] RViz config: {rviz_cfg}"),
+        Node(
+            package="rviz2",
+            executable="rviz2",
+            name="rviz2",
+            arguments=["-d", rviz_cfg],
+            output="screen",
+        ),
+    ]
+
+
+def _build_driver_bringup_actions(context) -> list[Any]:
+    camera_profile, camera_config, _, _, _, _, use_point_cloud = _resolve_camera_inputs(
+        context
+    )
     driver_bringup = context.perform_substitution(LaunchConfiguration("driver_bringup"))
     fps = context.perform_substitution(LaunchConfiguration("fps"))
 
     if driver_bringup == "none":
-        return [LogInfo(msg="[bag_for_slam] driver_bringup=none; expecting an external camera driver")]
+        return [
+            LogInfo(
+                msg="[bag_for_slam] driver_bringup=none; expecting an external camera driver"
+            )
+        ]
 
     if driver_bringup == "auto":
         if camera_config:
@@ -107,7 +164,9 @@ def _build_driver_bringup_actions(context):
     else:
         bringup_path = Path(driver_bringup)
         if not bringup_path.is_file():
-            raise FileNotFoundError(f"driver_bringup launch file not found: {bringup_path}")
+            raise FileNotFoundError(
+                f"driver_bringup launch file not found: {bringup_path}"
+            )
 
     return [
         LogInfo(msg=f"[bag_for_slam] Starting driver bringup: {bringup_path}"),
@@ -121,11 +180,13 @@ def _build_driver_bringup_actions(context):
     ]
 
 
-def _build_robot_bringup_actions(context):
+def _build_robot_bringup_actions(context) -> list[Any]:
     robot_bringup = context.perform_substitution(LaunchConfiguration("robot_bringup"))
 
     if robot_bringup == "none":
-        return [LogInfo(msg="[bag_for_slam] robot_bringup=none; not starting robot control")]
+        return [
+            LogInfo(msg="[bag_for_slam] robot_bringup=none; not starting robot control")
+        ]
 
     if robot_bringup == "auto":
         return [
@@ -173,9 +234,16 @@ def _resolve_robot_record_topics(context):
     return topics
 
 
-def _build_camera_input_actions(context, qos_yaml, bag_output):
-    _, _, config_path, camera, warnings, loaded_key_count, use_point_cloud = _resolve_camera_inputs(context)
+def _build_camera_input_actions(context, qos_yaml, bag_output) -> list[Any]:
+    _, _, config_path, camera, warnings, loaded_key_count, use_point_cloud = (
+        _resolve_camera_inputs(context)
+    )
     robot_record_topics = _resolve_robot_record_topics(context)
+    bag_dir = Path(context.perform_substitution(LaunchConfiguration("bag_dir")))
+
+    if bag_dir.exists() and not bag_dir.is_dir():
+        raise NotADirectoryError(f"bag_dir exists but is not a directory: {bag_dir}")
+    bag_dir.mkdir(parents=True, exist_ok=True)
 
     record_topics = [
         topic
@@ -195,7 +263,7 @@ def _build_camera_input_actions(context, qos_yaml, bag_output):
         record_topics.append(camera["point_cloud_topic"])
     record_topics.extend(robot_record_topics)
 
-    actions = build_camera_profile_logs(
+    actions: list[Any] = build_camera_profile_logs(
         "bag_for_slam",
         config_path,
         camera,
@@ -204,34 +272,39 @@ def _build_camera_input_actions(context, qos_yaml, bag_output):
         use_point_cloud=use_point_cloud,
     )
     actions.append(
-        LogInfo(msg=f"[bag_for_slam] robot_record_topics: {robot_record_topics or '<none>'}")
+        LogInfo(
+            msg=f"[bag_for_slam] robot_record_topics: {robot_record_topics or '<none>'}"
+        )
     )
+    record_gate_params = {
+        "bag_output": bag_output,
+        "bag_storage": LaunchConfiguration("storage"),
+        "qos_override_path": qos_yaml,
+        "record_topics": record_topics,
+        "rgb_image_topic": camera["rgb_image_topic"],
+        "rgb_camera_info_topic": camera["rgb_camera_info_topic"],
+        "depth_image_topic": camera["depth_image_topic"],
+        "depth_camera_info_topic": camera["depth_camera_info_topic"],
+        "point_cloud_topic": camera["point_cloud_topic"],
+        "imu_topic": camera["imu_topic"],
+        "use_point_cloud": use_point_cloud,
+        "approximate_sync": bool(camera["approximate_sync"]),
+        "depth_registered_to_color": bool(camera["depth_registered_to_color"]),
+        "require_registered_depth": bool(camera["require_registered_depth"]),
+        "require_imu": bool(camera["require_imu"]),
+        "require_tf_static": bool(camera["require_tf_static"]),
+        "qos_profile": camera["qos_profile"],
+    }
+    if camera["required_tf_frames"]:
+        record_gate_params["required_tf_frames"] = camera["required_tf_frames"]
+
     actions.append(
         Node(
             package="record_for_slam",
             executable="record_gate",
             name="record_gate",
             output="screen",
-            parameters=[{
-                "bag_output": bag_output,
-                "bag_storage": LaunchConfiguration("storage"),
-                "qos_override_path": qos_yaml,
-                "record_topics": record_topics,
-                "rgb_image_topic": camera["rgb_image_topic"],
-                "rgb_camera_info_topic": camera["rgb_camera_info_topic"],
-                "depth_image_topic": camera["depth_image_topic"],
-                "depth_camera_info_topic": camera["depth_camera_info_topic"],
-                "point_cloud_topic": camera["point_cloud_topic"],
-                "imu_topic": camera["imu_topic"],
-                "use_point_cloud": use_point_cloud,
-                "approximate_sync": bool(camera["approximate_sync"]),
-                "depth_registered_to_color": bool(camera["depth_registered_to_color"]),
-                "require_registered_depth": bool(camera["require_registered_depth"]),
-                "require_imu": bool(camera["require_imu"]),
-                "require_tf_static": bool(camera["require_tf_static"]),
-                "required_tf_frames": list(camera["required_tf_frames"]),
-                "qos_profile": camera["qos_profile"],
-            }],
+            parameters=[record_gate_params],
         ),
     )
     if camera["imu_raw_topic"] and camera["imu_topic"]:
@@ -271,7 +344,6 @@ def _build_camera_input_actions(context, qos_yaml, bag_output):
 
 
 def generate_launch_description():
-
     # ------------------------------------------------------------------
     # Launch arguments
     # ------------------------------------------------------------------
@@ -279,7 +351,13 @@ def generate_launch_description():
     bag_prefix_arg = DeclareLaunchArgument(
         "bag_prefix",
         default_value="slam",
-        description="Prefix for the output bag directory (saved to <pkg>/bags/)",
+        description="Prefix for the output bag directory (saved to <bag_dir>/)",
+    )
+
+    bag_dir_arg = DeclareLaunchArgument(
+        "bag_dir",
+        default_value=str(_BAGS_DIR),
+        description="Directory where timestamped bag folders are saved",
     )
 
     enable_pointcloud_arg = DeclareLaunchArgument(
@@ -340,14 +418,7 @@ def generate_launch_description():
     # RViz2
     # ------------------------------------------------------------------
 
-    rviz_node = Node(
-        package="rviz2",
-        executable="rviz2",
-        name="rviz2",
-        arguments=["-d", str(_RVIZ_CFG)],
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("enable_rviz")),
-    )
+    rviz_node = OpaqueFunction(function=_build_rviz_node)
 
     # ------------------------------------------------------------------
     # record_gate — starts the in-process rosbag2 recorder once all sensors are live
@@ -359,7 +430,9 @@ def generate_launch_description():
 
     bag_output = PythonExpression(
         [
-            f"r'{_BAGS_DIR}/' + '",
+            "'",
+            LaunchConfiguration("bag_dir"),
+            "/' + '",
             LaunchConfiguration("bag_prefix"),
             "' + '_' + __import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')",
         ]
@@ -383,6 +456,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             bag_prefix_arg,
+            bag_dir_arg,
             fps_arg,
             enable_pointcloud_arg,
             enable_rviz_arg,
